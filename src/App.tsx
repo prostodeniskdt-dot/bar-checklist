@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import jsPDF from "jspdf";
+import fontUrl from "./fonts/Roboto-Regular.ttf?url"; // наш TTF как URL-ресурс
 
-/** Бар-чеклист (короткая версия, 10 пунктов) */
+/** Базовые пункты чек-листа */
 const DEFAULT_ITEMS = [
   "Оборудование включено и исправно; журнал температур заполнен",
   "Чистота стойки, раковин и поверхностей; мусор вынесен",
@@ -21,31 +22,34 @@ const HISTORY_KEY = "barChecklist_history_v1";
 function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
-function nowISO() { return new Date().toISOString(); }
+function nowISO() {
+  return new Date().toISOString();
+}
 
-/** Сжатие изображений перед сохранением: до maxSide px, JPEG 0.8 */
-async function fileToDataUrlCompressed(file: File, maxSide = 1280, quality = 0.8) {
+/** Сжать фото перед сохранением (в DataURL) */
+async function fileToDataUrlCompressed(file: File, maxSide = 1280, quality = 0.85) {
   const dataUrl: string = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
+    const r = new FileReader();
+    r.onload = () => resolve(r.result as string);
+    r.onerror = reject;
+    r.readAsDataURL(file);
   });
 
   const img: HTMLImageElement = await new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = reject;
-    image.src = dataUrl;
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = reject;
+    i.src = dataUrl;
   });
 
-  const canvas = document.createElement("canvas");
   let { width, height } = img;
   const scale = maxSide / Math.max(width, height);
   if (scale < 1) {
     width = Math.round(width * scale);
     height = Math.round(height * scale);
   }
+
+  const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d")!;
@@ -53,13 +57,60 @@ async function fileToDataUrlCompressed(file: File, maxSide = 1280, quality = 0.8
   return canvas.toDataURL("image/jpeg", quality);
 }
 
+/** LocalStorage утилиты */
 function loadState() {
-  try { const raw = localStorage.getItem(STORAGE_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
 }
-function saveState(state: any) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {} }
-function loadHistory() { try { const raw = localStorage.getItem(HISTORY_KEY); return raw ? JSON.parse(raw) : []; } catch { return []; } }
-function saveHistory(arr: any[]) { try { localStorage.setItem(HISTORY_KEY, JSON.stringify(arr)); } catch {} }
+function saveState(state: any) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {}
+}
+function loadHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+function saveHistory(arr: any[]) {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(arr));
+  } catch {}
+}
 
+/** Хелперы для PDF */
+async function urlToBase64(url: string): Promise<string> {
+  const res = await fetch(url);
+  const buf = await res.arrayBuffer();
+  let binary = "";
+  const bytes = new Uint8Array(buf);
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+function loadImg(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = reject;
+    i.src = src;
+  });
+}
+function fitWithin(w: number, h: number, maxW: number, maxH: number) {
+  const k = Math.min(maxW / w, maxH / h);
+  return { w: w * k, h: h * k };
+}
+
+/** Новый пустой чек-лист */
 const emptyChecklist = () => ({
   id: uid(),
   createdAt: nowISO(),
@@ -85,9 +136,14 @@ export default function App() {
   const completed = useMemo(() => checklist.items.filter((i: any) => i.done).length, [checklist]);
   const total = checklist.items.length;
 
-  function resetChecklist() { setChecklist(emptyChecklist()); }
+  function resetChecklist() {
+    setChecklist(emptyChecklist());
+  }
   function updateItem(id: string, patch: any) {
-    setChecklist((c: any) => ({ ...c, items: c.items.map((it: any) => it.id === id ? { ...it, ...patch } : it) }));
+    setChecklist((c: any) => ({
+      ...c,
+      items: c.items.map((it: any) => (it.id === id ? { ...it, ...patch } : it))
+    }));
   }
 
   async function handleAddPhoto(itemId: string, files: FileList | null) {
@@ -95,14 +151,17 @@ export default function App() {
     const maxPhotos = 4;
     const arr: string[] = [];
     for (let i = 0; i < files.length; i++) {
-      const f = files[i]; if (!f.type.startsWith("image/")) continue;
+      const f = files[i];
+      if (!f.type.startsWith("image/")) continue;
       const dataUrl = await fileToDataUrlCompressed(f);
       arr.push(dataUrl);
     }
     setChecklist((c: any) => ({
       ...c,
       items: c.items.map((it: any) =>
-        it.id === itemId ? { ...it, photos: [...it.photos, ...arr].slice(0, maxPhotos), done: true } : it
+        it.id === itemId
+          ? { ...it, photos: [...it.photos, ...arr].slice(0, maxPhotos), done: true }
+          : it
       )
     }));
   }
@@ -110,7 +169,9 @@ export default function App() {
   function removePhoto(itemId: string, idx: number) {
     setChecklist((c: any) => ({
       ...c,
-      items: c.items.map((it: any) => it.id === itemId ? { ...it, photos: it.photos.filter((_: any, i: number) => i !== idx) } : it)
+      items: c.items.map((it: any) =>
+        it.id === itemId ? { ...it, photos: it.photos.filter((_: any, i: number) => i !== idx) } : it
+      )
     }));
   }
 
@@ -131,63 +192,109 @@ export default function App() {
     }));
   }
 
+  /** Генерация PDF с вшитым шрифтом и аккуратными фото */
   async function generatePdfAndShare(dataForPdf: any) {
     const doc = new jsPDF({ orientation: "p", unit: "mm", format: "a4" });
-    const margin = 12, pageW = 210, pageH = 297;
+
+    // 1) Вшиваем кириллический шрифт
+    const fontB64 = await urlToBase64(fontUrl);
+    doc.addFileToVFS("Roboto-Regular.ttf", fontB64);
+    doc.addFont("Roboto-Regular.ttf", "Roboto", "normal");
+    doc.setFont("Roboto", "normal");
+
+    // 2) Поля и сетка под фото (2 колонки)
+    const margin = 12;
+    const pageW = 210;
+    const pageH = 297;
+    const gap = 4;
+    const cols = 2;
+    const cellW = (pageW - margin * 2 - gap * (cols - 1)) / cols;
+    const cellH = 70; // фото крупнее
     let y = margin;
 
     const title = "Отчёт — Чек-лист открытия бара";
     const ts = new Date().toLocaleString();
 
-    doc.setFontSize(16); doc.text(title, margin, y); y += 8;
-    doc.setFontSize(11); doc.text(`Дата/время: ${ts}`, margin, y); y += 6;
-    doc.text(`Чек-лист: ${dataForPdf.id}`, margin, y); y += 8;
+    doc.setFontSize(16);
+    doc.text(title, margin, y);
+    y += 8;
 
-    dataForPdf.items.forEach((it: any) => {
+    doc.setFontSize(11);
+    doc.text(`Дата/время: ${ts}`, margin, y);
+    y += 6;
+    doc.text(`Чек-лист: ${dataForPdf.id}`, margin, y);
+    y += 8;
+
+    for (const it of dataForPdf.items) {
       const text = `${it.order}. ${it.title}`;
       const status = it.done ? "[Выполнено]" : "[Не выполнено]";
       const note = it.note ? `\nЗаметка: ${it.note}` : "";
 
       doc.setFontSize(12);
-      const split = doc.splitTextToSize(`${text} ${status}${note}`, pageW - margin * 2);
-      split.forEach((line: string) => {
+      const lines = doc.splitTextToSize(`${text} ${status}${note}`, pageW - margin * 2);
+      for (const line of lines) {
         if (y > pageH - margin) { doc.addPage(); y = margin; }
-        doc.text(line, margin, y); y += 6;
-      });
+        doc.text(line, margin, y);
+        y += 6;
+      }
 
-      // Фото (до 4 шт.)
-      const imgW = 60, imgH = 45, gap = 4;
-      let x = margin;
+      // Фото — по 2 на строку, с сохранением пропорций
       if (it.photos && it.photos.length) {
-        for (let p = 0; p < it.photos.length; p++) {
-          if (y + imgH > pageH - margin) { doc.addPage(); y = margin; x = margin; }
-          try { doc.addImage(it.photos[p], "JPEG", x, y, imgW, imgH); } catch {}
-          x += imgW + gap;
-          if (x + imgW > pageW - margin) { x = margin; y += imgH + gap; }
+        let col = 0;
+        let x = margin;
+
+        for (const src of it.photos) {
+          if (y + cellH > pageH - margin) {
+            doc.addPage(); y = margin; col = 0; x = margin;
+          }
+          const img = await loadImg(src);
+          const { w, h } = fitWithin(img.width, img.height, cellW, cellH);
+          const dx = (cellW - w) / 2; // выровнять по центру ячейки
+          doc.addImage(src, "JPEG", x + dx, y, w, h, undefined, "FAST");
+
+          col++;
+          if (col >= cols) {
+            col = 0;
+            x = margin;
+            y += cellH + gap;
+          } else {
+            x += cellW + gap;
+          }
         }
-        y += imgH + 2;
-      } else { y += 2; }
+
+        if (col !== 0) y += cellH + 2; // дорисовать отступ, если строка неполная
+      } else {
+        y += 2;
+      }
 
       if (y > pageH - margin) { doc.addPage(); y = margin; }
-      doc.setLineWidth(0.2); doc.line(margin, y, pageW - margin, y); y += 4;
-    });
+      doc.setLineWidth(0.2);
+      doc.line(margin, y, pageW - margin, y);
+      y += 4;
+    }
 
+    // 3) Сохранение/шаринг
     const blob = doc.output("blob");
     const fileName = `BarChecklist_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
 
     try {
       const file = new File([blob], fileName, { type: "application/pdf" });
-      if ((navigator as any).canShare && (navigator as any).canShare({ files: [file] })) {
-        await (navigator as any).share({ files: [file], title: "Отчёт чек-лист" });
+      const navAny = navigator as any;
+      if (navAny.canShare && navAny.canShare({ files: [file] })) {
+        await navAny.share({ files: [file], title: "Отчёт чек-лист" });
       } else {
         const url = URL.createObjectURL(blob);
-        const a = document.createElement("a"); a.href = url; a.download = fileName;
-        document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+        const a = document.createElement("a");
+        a.href = url; a.download = fileName;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
       }
     } catch {
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url; a.download = fileName;
-      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      const a = document.createElement("a");
+      a.href = url; a.download = fileName;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
     }
   }
 
@@ -210,7 +317,9 @@ export default function App() {
       await generatePdfAndShare(dataForPdf);
       resetChecklist();
       setTab("today");
-    } finally { setIsMakingPdf(false); }
+    } finally {
+      setIsMakingPdf(false);
+    }
   }
 
   function restoreFromHistory(h: any) {
